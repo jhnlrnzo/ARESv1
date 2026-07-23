@@ -1,2 +1,2 @@
-# WeRescueAI
+# ARES
 AI Disaster Response Platform.
