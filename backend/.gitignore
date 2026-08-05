@@ -1,0 +1,26 @@
+# Python
+_pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment
+.env
+
+# Pytest
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Alembic
+alembic/versions/*.pyc
+
