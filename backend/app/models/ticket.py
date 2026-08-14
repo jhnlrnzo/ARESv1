@@ -57,3 +57,13 @@ class Ticket(Base):
         server_default=func.now(),
         onupdate=func.now()
     )
+
+    cancelled_at: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+
+    cancellation_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True
+    )
