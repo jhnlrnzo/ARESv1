@@ -30,7 +30,7 @@ class Ticket(Base):
 
     status: Mapped[str] = mapped_column(
         String(20),
-        default="NEW"
+        default="PENDING"
     )
 
     priority: Mapped[str] = mapped_column(
@@ -65,5 +65,10 @@ class Ticket(Base):
 
     cancellation_reason: Mapped[str | None] = mapped_column(
         Text,
+        nullable=True
+    )
+
+    completed_at: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
         nullable=True
     )
