@@ -31,6 +31,11 @@ def create_mission(mission: MissionCreate, db: Session = Depends(get_db)):
 
     vehicle = db.scalars(select(Vehicle).where(Vehicle.id == mission.vehicle_id)).first()
 
+    active_mission = db.scalars(select(Mission).where(
+        Mission.ticket_id == mission.ticket_id,
+        Mission.status.in_(["ASSIGNED", "EN_ROUTE", "ON_SCENE"])
+    )).first()
+
     if ticket is None:
         raise HTTPException(
             status_code=404,
@@ -47,15 +52,25 @@ def create_mission(mission: MissionCreate, db: Session = Depends(get_db)):
             detail="Vehicle Not Found"
         )
 
-    if team.status != "PENDING":
+    if team.status != "AVAILABLE":
         raise HTTPException(
             status_code=409,
             detail="Team is not available"
         )
-    if vehicle.status != "PENDING":
+    if vehicle.status != "AVAILABLE":
         raise HTTPException(
             status_code=409,
             detail="Vehicle is not available"
+        )
+    if ticket.status in ["RESCUED", "CANCELLED"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Ticket is not available for assignment"
+        )
+    if active_mission is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="An active mission already exists for this ticket"
         )
     
     new_mission = Mission(
@@ -123,6 +138,8 @@ def update_mission(mission_id:str, mission_data: MissionUpdate, db: Session = De
 @router.patch("/{mission_id}/en-route")
 def en_route_mission(mission_id:str, db: Session = Depends(get_db)):
     mission = db.scalars(select(Mission).where(Mission.id == mission_id)).first()
+    ticket = db.scalars(select(Ticket).where(Ticket.id == mission.ticket_id)).first()
+
     if mission is None:
         raise HTTPException(
             status_code=404,
@@ -136,12 +153,73 @@ def en_route_mission(mission_id:str, db: Session = Depends(get_db)):
         )
 
     old_mission_status=mission.status
-    old_ticket_status=mission.ticket.status
+    old_ticket_status=ticket.status
 
     mission.status = "EN_ROUTE"
     ticket.status = "EN_ROUTE"
 
-    mission.en_route_time = datetime.now(timezone.utc)
+    mission.en_route_at = datetime.now(timezone.utc)
+
+    create_audit_log(
+        db=db,
+        entity_type="MISSION",
+        entity_id=mission.id,
+        action="STATUS CHANGED",
+        old_value=old_mission_status,
+        new_value=mission.status,
+        performed_by=None
+    )
+
+    create_audit_log(
+        db=db,
+        entity_type="TICKET",
+        entity_id=ticket.id,
+        action="STATUS CHANGED",
+        old_value=old_ticket_status,
+        new_value=ticket.status,
+        performed_by=None
+    )
+
+    db.commit()
+    db.refresh(mission)
+
+    return mission
+
+@router.patch("/{mission_id}/on-scene")
+def on_scene_mission(mission_id:str, db: Session = Depends(get_db)):
+    mission = db.scalars(select(Mission).where(Mission.id == mission_id)).first()
+    ticket = db.scalars(select(Ticket).where(Ticket.id == mission.ticket_id)).first()
+
+    if mission is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Mission not found"
+        )
+
+    if ticket is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Ticket not found"
+        )
+
+    if mission.status != "EN_ROUTE":
+        raise HTTPException(
+            status_code=400,
+            detail="Mission must be EN_ROUTE before going ON_SCENE"
+        )
+    if ticket.status != "EN_ROUTE":
+        raise HTTPException(
+            status_code=400,
+            detail="Ticket must be EN_ROUTE before going ON_SCENE"
+        )
+
+    old_mission_status=mission.status
+    old_ticket_status=ticket.status
+
+    mission.status = "ON_SCENE"
+    ticket.status = "ON_SCENE"
+
+    mission.on_scene_at = datetime.now(timezone.utc)
 
     create_audit_log(
         db=db,
@@ -171,6 +249,32 @@ def en_route_mission(mission_id:str, db: Session = Depends(get_db)):
 @router.patch("/{mission_id}/completed")
 def completed_mission(mission_id:str, db: Session = Depends(get_db)):
     mission = db.scalars(select(Mission).where(Mission.id == mission_id)).first()
+    ticket = db.scalars(select(Ticket).where(Ticket.id == mission.ticket_id)).first()
+    team = db.scalars(select(RescueTeam).where(RescueTeam.id == mission.team_id)).first()
+    vehicle = db.scalars(select(Vehicle).where(Vehicle.id == mission.vehicle_id)).first()
+
+    if ticket is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Ticket not found"
+        )
+
+    if ticket.status != "ON_SCENE":
+        raise HTTPException(
+            status_code=400,
+            detail="Ticket must be On Scene before being RESCUED"
+        )
+
+    if team is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Rescue Team not found"
+        )
+    if team.status != "ON_SCENE":
+        raise HTTPException(
+            status_code=400,
+            detail="Rescue Team must be On Scene before being AVAILABLE"
+        ) 
 
     if mission is None:
         raise HTTPException(
@@ -203,6 +307,44 @@ def completed_mission(mission_id:str, db: Session = Depends(get_db)):
 @router.patch("/{mission_id}/cancelled")
 def cancelled_mission(mission_id:str, db: Session = Depends(get_db)):
     mission = db.scalars(select(Mission).where(Mission.id == mission_id)).first()
+    team = db.scalars(select(RescueTeam).where(RescueTeam.id == mission.team_id)).first()
+    vehicle = db.scalars(select(Vehicle).where(Vehicle.id == mission.vehicle_id)).first()
+    ticket = db.scalars(select(Ticket).where(Ticket.id == mission.ticket_id)).first()
+
+    if ticket is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Ticket not found"
+        )
+    if ticket.status in ["RESCUED", "CANCELLED"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Ticket cannot be CANCELLED as it is already RESCUED or CANCELLED"
+        )
+    
+    if team is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Rescue Team not found"
+        )
+
+    if team.status in ["AVAILABLE", "CANCELLED"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Rescue Team cannot be CANCELLED as it is already AVAILABLE or CANCELLED"
+        )
+
+    if vehicle is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Vehicle not found"
+        )
+    if vehicle.status in ["AVAILABLE", "CANCELLED"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Vehicle cannot be CANCELLED as it is already AVAILABLE or CANCELLED"
+        )
+
     if mission is None:
         raise HTTPException(
             status_code=404,

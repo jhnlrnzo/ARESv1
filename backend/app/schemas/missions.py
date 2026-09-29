@@ -1,11 +1,13 @@
 from datetime import datetime
 from pydantic import BaseModel
 
+from typing import Optional
+
 class MissionCreate(BaseModel):
     ticket_id: str
     team_id: str
     vehicle_id: str
-
+    priority: str
     personnel_required: int
     medical_personnel: int
     vehicle_required: int
