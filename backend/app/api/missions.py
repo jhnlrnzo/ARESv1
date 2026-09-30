@@ -22,6 +22,36 @@ router = APIRouter(
     tags =["Missions"]
 )
 
+def find_available_teams(db: Session, personnel_required: int, medical_personnel: int):
+    available_teams = db.scalars(
+        select(RescueTeam).where(
+            RescueTeam.status == "AVAILABLE",
+            RescueTeam.members_count >= personnel_required,
+            RescueTeam.medical_personnel >= medical_personnel
+        )
+    ).all()
+
+    if not available_teams:
+        return None
+
+    # Sort teams by distance to the incident location (if needed)
+    # For now, just return the first available team
+    return available_teams
+
+@router.get("/available-teams")
+def get_available_teams(
+    personnel_required: int,
+    medical_personnel: int,
+    db: Session = Depends(get_db)
+):
+    teams = find_available_teams(
+        db,
+        personnel_required,
+        medical_personnel
+    )
+
+    return teams
+
 @router.post("/")
 def create_mission(mission: MissionCreate, db: Session = Depends(get_db)):
 
@@ -364,7 +394,7 @@ def cancelled_mission(mission_id:str, db: Session = Depends(get_db)):
     if vehicle:
         vehicle.status = "AVAILABLE"
     if ticket:
-        ticket.status = "CANCELLED"
+        ticket.status = "PENDING"  # Assuming the ticket goes back to PENDING when mission is cancelled
 
     mission.cancelled_at = datetime.now(timezone.utc)
     ticket.cancelled_at = datetime.now(timezone.utc)
