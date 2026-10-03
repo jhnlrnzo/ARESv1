@@ -31,8 +31,6 @@ def find_available_teams(db: Session, personnel_required: int, medical_personnel
         )
     ).all()
 
-    if not available_teams:
-        return None
 
     # Sort teams by distance to the incident location (if needed)
     # For now, just return the first available team

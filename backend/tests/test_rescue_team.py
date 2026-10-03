@@ -19,3 +19,18 @@ def test_find_available_teams():
 
     finally:
         db.close()
+
+def test_find_available_teams_no_available():
+    db = SessionLocal()
+
+    try: 
+        teams = find_available_teams(
+            db,
+            personnel_required=100,
+            medical_personnel=50
+        )
+
+        assert len(teams) == 0
+
+    finally:
+        db.close()
