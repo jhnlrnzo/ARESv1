@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from datetime import datetime, timezone
+from math import radians, cos, sin, sqrt, atan2
 
 from app.schemas.missions import (
     MissionCreate,
@@ -22,19 +23,43 @@ router = APIRouter(
     tags =["Missions"]
 )
 
-def find_available_teams(db: Session, personnel_required: int, medical_personnel: int):
-    available_teams = db.scalars(
-        select(RescueTeam).where(
-            RescueTeam.status == "AVAILABLE",
-            RescueTeam.members_count >= personnel_required,
-            RescueTeam.medical_personnel >= medical_personnel
-        )
-    ).all()
+def calculate_distance(lat1, lon1, lat2, lon2):
+    R = 6371.0  # Radius of the Earth in kilometers
 
+    lat1_rad = radians(lat1)
+    lon1_rad = radians(lon1)
+    lat2_rad = radians(lat2)
+    lon2_rad = radians(lon2)
 
-    # Sort teams by distance to the incident location (if needed)
-    # For now, just return the first available team
-    return available_teams
+    dlon = lon2_rad - lon1_rad
+    dlat = lat2_rad - lat1_rad
+
+    a = sin(dlat / 2)**2 + cos(lat1_rad) * cos(lat2_rad) * sin(dlon / 2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+    distance = R * c
+    return distance
+
+def select_best_team(available_teams, ticket):
+    
+    if not available_teams:
+        return None
+
+    ticket_latitude = ticket.latitude
+    ticket_longitude = ticket.longitude
+
+    team_with_coordinates = [
+        team for team in available_teams
+        if team.latitude is not None 
+        and team.longitude is not None
+    ]
+
+    if not team_with_coordinates:
+        return None
+
+    closest = min(team_with_coordinates, key=lambda team: calculate_distance(team.latitude, team.longitude, ticket_latitude, ticket_longitude))
+
+    return closest
 
 @router.get("/available-teams")
 def get_available_teams(
@@ -50,12 +75,50 @@ def get_available_teams(
 
     return teams
 
+def find_available_teams(db: Session, personnel_required: int, medical_personnel: int):
+    available_teams = db.scalars(
+        select(RescueTeam).where(
+            RescueTeam.status == "AVAILABLE",
+            RescueTeam.members_count >= personnel_required,
+            RescueTeam.medical_personnel >= medical_personnel
+        )
+    ).all()
+
+
+    # Sort teams by distance to the incident location (if needed)
+    # For now, just return the first available team
+    return available_teams
+
 @router.post("/")
 def create_mission(mission: MissionCreate, db: Session = Depends(get_db)):
 
     ticket = db.scalars(select(Ticket).where(Ticket.id == mission.ticket_id)).first()
 
-    team = db.scalars(select(RescueTeam).where(RescueTeam.id == mission.team_id)).first()
+    if ticket is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Ticket Not Found"
+        )
+    
+    if mission.team_id is None:
+        eligible_teams = find_available_teams(
+            db,
+            personnel_required=mission.personnel_required,
+            medical_personnel=mission.medical_personnel
+        )
+        team = select_best_team(eligible_teams, ticket)
+        if team is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No available team found for the given requirements"
+            )
+    else:
+        team = db.scalars(select(RescueTeam).where(RescueTeam.id == mission.team_id)).first()
+        if team is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Rescue Team Not Found"
+            )
 
     vehicle = db.scalars(select(Vehicle).where(Vehicle.id == mission.vehicle_id)).first()
 
@@ -64,11 +127,7 @@ def create_mission(mission: MissionCreate, db: Session = Depends(get_db)):
         Mission.status.in_(["ASSIGNED", "EN_ROUTE", "ON_SCENE"])
     )).first()
 
-    if ticket is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Ticket Not Found"
-        )
+
     if team is None:  
         raise HTTPException(
             status_code=404,
