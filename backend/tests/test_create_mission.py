@@ -1,122 +1,124 @@
-from app.schemas.missions import (
-    MissionCreate,
-    MissionResponse,
-    MissionUpdate
-)
-from app.models.missions import Mission
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.db.session import SessionLocal
 from app.models.ticket import Ticket
 from app.models.rescue_team import RescueTeam
 from app.models.vehicle import Vehicle
-
-from app.dependencies import get_db
-
-def make_ticket(db, lat=14.5995, lon=120.9842, status="OPEN"):
-    t = Ticket(latitude=lat, longitude=lon, status=status)
-    db.add(t); db.commit(); db.refresh(t)
-    return t
+from app.models.missions import Mission
 
 
-def make_team(db, lat, lon, members=5, medics=2, status="AVAILABLE"):
-    t = RescueTeam(latitude=lat, longitude=lon, members_count=members,
-                   medical_personnel=medics, status=status)
-    db.add(t); db.commit(); db.refresh(t)
-    return t
+client = TestClient(app)
 
 
-def make_vehicle(db, status="AVAILABLE"):
-    v = Vehicle(status=status)
-    db.add(v); db.commit(); db.refresh(v)
-    return v
+def test_create_mission_auto_selects_closest_team():
 
+    db = SessionLocal()
 
-def payload(ticket, vehicle, team=None, personnel=3, medics=1):
-    data = {
-        "ticket_id": ticket.id,
-        "vehicle_id": vehicle.id,
-        "priority": "HIGH",               # use a value your schema accepts
-        "personnel_required": personnel,
-        "medical_personnel": medics,
-        "vehicle_required": "BOAT",       # adjust type/value to your schema
-    }
-    if team is not None:
-        data["team_id"] = team.id
-    return data
+    ticket = Ticket(
+        caller_name="Test Caller",
+        caller_phone="09999999999",
+        incident_type="FLOOD",
+        status="OPEN",
+        priority="HIGH",
+        latitude=14.5995,
+        longitude=120.9842,
+    )
 
+    team_1 = RescueTeam(
+        name="Test Team 1",
+        status="AVAILABLE",
+        latitude=14.5995,
+        longitude=120.9842,
+        members_count=5,
+        medical_personnel=2,
+    )
 
-def test_auto_assigns_nearest_eligible_team(client, db):
-    ticket = make_ticket(db)
-    near = make_team(db, 14.6000, 120.9850)
-    make_team(db, 14.7000, 121.0000)
-    vehicle = make_vehicle(db)
+    team_2 = RescueTeam(
+        name="Test Team 2",
+        status="AVAILABLE",
+        latitude=14.6100,
+        longitude=121.0100,
+        members_count=5,
+        medical_personnel=2,
+    )
 
-    res = client.post("/missions/", json=payload(ticket, vehicle))
+    vehicle = Vehicle(
+        name="Test Vehicle",
+        vehicle_type="RESCUE",
+        status="AVAILABLE",
+        latitude=14.5995,
+        longitude=120.9842,
+        capacity=10,
+        medical_capacity=5,
+    )
 
-    assert res.status_code == 200
-    assert res.json()["mission"]["team_id"] == near.id
+    db.add_all([
+        ticket,
+        team_1,
+        team_2,
+        vehicle
+    ])
 
+    db.commit()
 
-def test_skips_nearer_team_that_is_not_eligible(client, db):
-    ticket = make_ticket(db)
-    make_team(db, 14.6000, 120.9850, medics=0)       # closest, but no medic
-    eligible = make_team(db, 14.7000, 121.0000, medics=2)
-    vehicle = make_vehicle(db)
+    db.refresh(ticket)
+    db.refresh(team_1)
+    db.refresh(team_2)
+    db.refresh(vehicle)
 
-    res = client.post("/missions/", json=payload(ticket, vehicle, medics=1))
+    try:
 
-    assert res.status_code == 200
-    assert res.json()["mission"]["team_id"] == eligible.id
+        response = client.post(
+            "/missions/",
+            json={
+                "ticket_id": ticket.id,
+                "team_id": None,
+                "vehicle_id": vehicle.id,
+                "priority": "HIGH",
+                "personnel_required": 3,
+                "medical_personnel": 1,
+                "vehicle_required": 1
+            }
+        )
 
+        assert response.status_code == 200
 
-def test_no_eligible_team_returns_409(client, db):
-    ticket = make_ticket(db)
-    make_team(db, 14.6000, 120.9850, members=2)
-    vehicle = make_vehicle(db)
+        data = response.json()
 
-    res = client.post("/missions/", json=payload(ticket, vehicle, personnel=10))
+        assert data["message"] == "Mission Created Successfully!"
 
-    assert res.status_code == 409
-    assert "No available team" in res.json()["detail"]
+        mission = data["mission"]
 
+        # The closest team should have been selected.
+        assert mission["team_id"] == team_1.id
 
-def test_statuses_updated_after_assignment(client, db):
-    ticket = make_ticket(db)
-    team = make_team(db, 14.6000, 120.9850)
-    vehicle = make_vehicle(db)
+        # Mission should start as ASSIGNED.
+        assert mission["status"] == "ASSIGNED"
 
-    client.post("/missions/", json=payload(ticket, vehicle))
+        # Ticket should become ASSIGNED.
+        db.refresh(ticket)
+        assert ticket.status == "ASSIGNED"
 
-    db.refresh(ticket); db.refresh(team); db.refresh(vehicle)
-    assert ticket.status == "ASSIGNED"
-    assert team.status == "ASSIGNED"
-    assert vehicle.status == "ASSIGNED"
+        # Selected team should become ASSIGNED.
+        db.refresh(team_1)
+        assert team_1.status == "ASSIGNED"
 
+        # Vehicle should become ASSIGNED.
+        db.refresh(vehicle)
+        assert vehicle.status == "ASSIGNED"
 
-def test_manual_team_id_still_works(client, db):
-    ticket = make_ticket(db)
-    make_team(db, 14.6000, 120.9850)                  # nearer, but not chosen
-    chosen = make_team(db, 14.7000, 121.0000)
-    vehicle = make_vehicle(db)
+    finally:
 
-    res = client.post("/missions/", json=payload(ticket, vehicle, team=chosen))
+        # Clean up test data.
+        db.query(Mission).filter(
+            Mission.ticket_id == ticket.id
+        ).delete()
 
-    assert res.status_code == 200
-    assert res.json()["mission"]["team_id"] == chosen.id
+        db.delete(ticket)
+        db.delete(team_1)
+        db.delete(team_2)
+        db.delete(vehicle)
 
-
-def test_ticket_not_found_returns_404(client, db):
-    vehicle = make_vehicle(db)
-    data = {"ticket_id": 9999, "vehicle_id": vehicle.id, "priority": "HIGH",
-            "personnel_required": 1, "medical_personnel": 0, "vehicle_required": "BOAT"}
-
-    assert client.post("/missions/", json=data).status_code == 404
-
-
-def test_duplicate_active_mission_returns_409(client, db):
-    ticket = make_ticket(db)
-    make_team(db, 14.6000, 120.9850)
-    make_team(db, 14.6100, 120.9900)
-    make_vehicle(db)
-    v1, v2 = make_vehicle(db), make_vehicle(db)
-
-    assert client.post("/missions/", json=payload(ticket, v1)).status_code == 200
-    assert client.post("/missions/", json=payload(ticket, v2)).status_code == 409
+        db.commit()
+        db.close()

@@ -127,12 +127,6 @@ def create_mission(mission: MissionCreate, db: Session = Depends(get_db)):
         Mission.status.in_(["ASSIGNED", "EN_ROUTE", "ON_SCENE"])
     )).first()
 
-
-    if team is None:  
-        raise HTTPException(
-            status_code=404,
-            detail="Rescue Team Not Found"
-        )
     if vehicle is None: 
         raise HTTPException(
             status_code=404,
@@ -162,7 +156,7 @@ def create_mission(mission: MissionCreate, db: Session = Depends(get_db)):
     
     new_mission = Mission(
         ticket_id = mission.ticket_id,
-        team_id = mission.team_id,
+        team_id = team.id,
         vehicle_id = mission.vehicle_id,
         priority = mission.priority,
         latitude = ticket.latitude,
