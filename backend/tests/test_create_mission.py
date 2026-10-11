@@ -294,14 +294,14 @@ def test_create_mission_fails_when_no_vehicle_is_available():
         db.commit()
         db.close()
 
-def test_create_mission_fails_when_ticket_has_active_mission():
+def test_create_mission_fails_when_team_is_en_route():
     db = SessionLocal()
 
     ticket = Ticket(
         caller_name="Test Caller",
         caller_phone="09999999999",
         incident_type="FLOOD",
-        status="ASSIGNED",
+        status="AVAILABLE",
         priority="HIGH",
         latitude=14.5995,
         longitude=120.9842,
@@ -309,7 +309,7 @@ def test_create_mission_fails_when_ticket_has_active_mission():
 
     team = RescueTeam(
         name="Test Team",
-        status="AVAILABLE",
+        status="EN_ROUTE",
         latitude=14.5995,
         longitude=120.9842,
         members_count=5,
@@ -326,11 +326,30 @@ def test_create_mission_fails_when_ticket_has_active_mission():
         medical_capacity=5,
     )
 
+
     db.add_all([ticket, team, vehicle])
     db.commit()
     db.refresh(ticket)
     db.refresh(team)
     db.refresh(vehicle)
+
+    
+    existing_mission = Mission(
+        ticket_id=ticket.id,
+        team_id=team.id,
+        vehicle_id=vehicle.id,
+        priority="HIGH",
+        latitude=ticket.latitude,
+        longitude=ticket.longitude,
+        personnel_required=3,
+        medical_personnel=1,
+        vehicle_required=1,
+        status="ASSIGNED",
+    )
+
+    db.add(existing_mission)
+    db.commit()
+    db.refresh(existing_mission)
 
     try:
         response = client.post(
@@ -348,7 +367,7 @@ def test_create_mission_fails_when_ticket_has_active_mission():
 
         assert response.status_code == 409
         assert response.json()["detail"] == (
-            "Ticket already has an active mission"
+            "Team is not available"
         )
 
         mission_count = (
@@ -356,22 +375,128 @@ def test_create_mission_fails_when_ticket_has_active_mission():
             .filter(Mission.ticket_id == ticket.id)
             .count()
         )
-        assert mission_count == 0
+        assert mission_count == 1
 
         db.refresh(ticket)
         db.refresh(team)
         db.refresh(vehicle)
+        db.refresh(existing_mission)
 
-        assert ticket.status == "ASSIGNED"
-        assert team.status == "AVAILABLE"
+        assert ticket.status == "AVAILABLE"
+        assert team.status == "EN_ROUTE"
         assert vehicle.status == "AVAILABLE"
 
     finally:
         db.query(Mission).filter(
             Mission.ticket_id == ticket.id
         ).delete()
+        db.delete(existing_mission)
         db.delete(ticket)
         db.delete(team)
         db.delete(vehicle)
         db.commit()
         db.close()
+
+def test_create_mission_fails_when_team_is_on_scene():
+    db = SessionLocal()
+
+    ticket = Ticket(
+        caller_name="Test Caller",
+        caller_phone="09999999999",
+        incident_type="FLOOD",
+        status="AVAILABLE",
+        priority="HIGH",
+        latitude=14.5995,
+        longitude=120.9842,
+    )
+
+    team = RescueTeam(
+        name="Test Team",
+        status="ON_SCENE",
+        latitude=14.5995,
+        longitude=120.9842,
+        members_count=5,
+        medical_personnel=2,
+    )
+
+    vehicle = Vehicle(
+        name="Test Vehicle",
+        vehicle_type="RESCUE",
+        status="AVAILABLE",
+        latitude=14.5995,
+        longitude=120.9842,
+        capacity=10,
+        medical_capacity=5,
+    )
+
+
+    db.add_all([ticket, team, vehicle])
+    db.commit()
+    db.refresh(ticket)
+    db.refresh(team)
+    db.refresh(vehicle)
+
+    
+    existing_mission = Mission(
+        ticket_id=ticket.id,
+        team_id=team.id,
+        vehicle_id=vehicle.id,
+        priority="HIGH",
+        latitude=ticket.latitude,
+        longitude=ticket.longitude,
+        personnel_required=3,
+        medical_personnel=1,
+        vehicle_required=1,
+        status="ASSIGNED",
+    )
+
+    db.add(existing_mission)
+    db.commit()
+    db.refresh(existing_mission)
+
+    try:
+        response = client.post(
+            "/missions/",
+            json={
+                "ticket_id": ticket.id,
+                "team_id": team.id,
+                "vehicle_id": vehicle.id,
+                "priority": "HIGH",
+                "personnel_required": 3,
+                "medical_personnel": 1,
+                "vehicle_required": 1,
+            },
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "Team is not available"
+        )
+
+        mission_count = (
+            db.query(Mission)
+            .filter(Mission.ticket_id == ticket.id)
+            .count()
+        )
+        assert mission_count == 1
+
+        db.refresh(ticket)
+        db.refresh(team)
+        db.refresh(vehicle)
+        db.refresh(existing_mission)
+
+        assert ticket.status == "AVAILABLE"
+        assert team.status == "ON_SCENE"
+        assert vehicle.status == "AVAILABLE"
+
+    finally:
+        db.query(Mission).filter(
+            Mission.ticket_id == ticket.id
+        ).delete()
+        db.delete(existing_mission)
+        db.delete(ticket)
+        db.delete(team)
+        db.delete(vehicle)
+        db.commit()
+        db.close()
+
