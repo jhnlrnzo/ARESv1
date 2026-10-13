@@ -500,3 +500,109 @@ def test_create_mission_fails_when_team_is_on_scene():
         db.commit()
         db.close()
 
+
+def test_create_mission_allows_retry_after_cancelled_mission():
+    db = SessionLocal()
+
+    ticket = Ticket(
+        caller_name="Test Caller",
+        caller_phone="09999999999",
+        incident_type="FLOOD",
+        status="AVAILABLE",
+        priority="HIGH",
+        latitude=14.5995,
+        longitude=120.9842,
+    )
+
+    team = RescueTeam(
+        name="Test Team",
+        status="AVAILABLE",
+        latitude=14.5995,
+        longitude=120.9842,
+        members_count=5,
+        medical_personnel=2,
+    )
+
+    vehicle = Vehicle(
+        name="Test Vehicle",
+        vehicle_type="RESCUE",
+        status="AVAILABLE",
+        latitude=14.5995,
+        longitude=120.9842,
+        capacity=10,
+        medical_capacity=5,
+    )
+
+    db.add_all([ticket, team, vehicle])
+    db.commit()
+    db.refresh(ticket)
+    db.refresh(team)
+    db.refresh(vehicle)
+
+    # Create a mission and then cancel it.
+    mission = Mission(
+        ticket_id=ticket.id,
+        team_id=team.id,
+        vehicle_id=vehicle.id,
+        priority="HIGH",
+        latitude=ticket.latitude,
+        longitude=ticket.longitude,
+        personnel_required=3,
+        medical_personnel=1,
+        vehicle_required=1,
+        status="CANCELLED",
+    )
+
+    db.add(mission)
+    db.commit()
+    db.refresh(mission)
+
+    try:
+        response = client.post(
+            "/missions/",
+            json={
+                "ticket_id": ticket.id,
+                "team_id": team.id,
+                "vehicle_id": vehicle.id,
+                "priority": "HIGH",
+                "personnel_required": 3,
+                "medical_personnel": 1,
+                "vehicle_required": 1,
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["message"] == "Mission Created Successfully!"
+
+        
+        new_mission = data["mission"]
+        assert new_mission["status"] == "ASSIGNED"
+
+        mission_count = (
+            db.query(Mission)
+            .filter(Mission.ticket_id == ticket.id)
+            .count()
+        )
+
+        assert mission_count == 2
+
+        # Ensure the ticket, team, and vehicle statuses are updated.
+        db.refresh(ticket)
+        db.refresh(team)
+        db.refresh(vehicle)
+
+        assert ticket.status == "ASSIGNED"
+        assert team.status == "ASSIGNED"
+        assert vehicle.status == "ASSIGNED"
+
+    finally:
+        db.query(Mission).filter(
+            Mission.ticket_id == ticket.id
+        ).delete()
+        db.delete(ticket)
+        db.delete(team)
+        db.delete(vehicle)
+        db.commit()
+        db.close()

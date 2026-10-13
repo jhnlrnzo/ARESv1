@@ -388,19 +388,30 @@ def completed_mission(mission_id:str, db: Session = Depends(get_db)):
 @router.patch("/{mission_id}/cancelled")
 def cancelled_mission(mission_id:str, db: Session = Depends(get_db)):
     mission = db.scalars(select(Mission).where(Mission.id == mission_id)).first()
+
+    if mission is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Mission not found"
+        )
+    
+    if mission.status in ["COMPLETED", "CANCELLED"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Mission cannot be CANCELLED as it is already COMPLETED or CANCELLED"
+        )
+
+
     team = db.scalars(select(RescueTeam).where(RescueTeam.id == mission.team_id)).first()
+
     vehicle = db.scalars(select(Vehicle).where(Vehicle.id == mission.vehicle_id)).first()
+
     ticket = db.scalars(select(Ticket).where(Ticket.id == mission.ticket_id)).first()
 
     if ticket is None:
         raise HTTPException(
             status_code=404,
             detail="Ticket not found"
-        )
-    if ticket.status in ["RESCUED", "CANCELLED"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Ticket cannot be CANCELLED as it is already RESCUED or CANCELLED"
         )
     
     if team is None:
@@ -426,6 +437,12 @@ def cancelled_mission(mission_id:str, db: Session = Depends(get_db)):
             detail="Vehicle cannot be CANCELLED as it is already AVAILABLE or CANCELLED"
         )
 
+     if ticket.status in ["RESCUED", "CANCELLED"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Ticket cannot be CANCELLED as it is already RESCUED or CANCELLED"
+        )
+
     if mission is None:
         raise HTTPException(
             status_code=404,
@@ -440,14 +457,16 @@ def cancelled_mission(mission_id:str, db: Session = Depends(get_db)):
 
 
     mission.status = "CANCELLED"
+    mission.cancelled_at = datetime.now(timezone.utc)
+
     if team:
         team.status = "AVAILABLE"
     if vehicle:
         vehicle.status = "AVAILABLE"
-    if ticket:
-        ticket.status = "PENDING"  # Assuming the ticket goes back to PENDING when mission is cancelled
+    if ticket.status not in ["RESCUED", "CANCELLED"]:
+        ticket.status = "OPEN"  # Assuming the ticket goes back to OPEN when mission is cancelled
 
-    mission.cancelled_at = datetime.now(timezone.utc)
+   
     ticket.cancelled_at = datetime.now(timezone.utc)
 
     db.commit()
